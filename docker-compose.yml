@@ -1,0 +1,14 @@
+---
+version: "2.2"
+
+services:
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+      - "4575:4566"
+      - "4576:4566"
+    environment:
+      SERVICES: sqs,sns
+      HOSTNAME_EXTERNAL: localhost
+      DEFAULT_REGION: eu-central-1
