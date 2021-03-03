@@ -7,12 +7,17 @@ const AWS_CONFIG = {
 	secretAccessKey: 'secretAccessKey'
 }
 
+// Localstack
 const sqs = new AWS.SQS({ ...AWS_CONFIG, endpoint: 'http://localhost:4566' });
 const sns = new AWS.SNS({ ...AWS_CONFIG, endpoint: 'http://localhost:4566' });
 
-const NUMBER_QUEUES = 10;
-const NUMBER_MESSAGES = 10;
-const NUMBER_TOPICS = 3;
+// AWS
+// const sqs = new AWS.SQS({ region: 'eu-west-1' });
+// const sns = new AWS.SNS({ region: 'eu-west-1' });
+
+const NUMBER_QUEUES = 30;
+const NUMBER_MESSAGES = 5;
+const NUMBER_TOPICS = 1;
 
 const queueHandlers = [];
 const receiveQueueMessages = {};
@@ -33,22 +38,60 @@ const queueUrls = [];
 		for (let i = 0; i < NUMBER_QUEUES; i++) {
 			const queueName = `${topicName}-queue-${i}`;
 
+			receiveQueueMessages[queueName] = [];
+
 			const { QueueUrl: queueUrl } = await sqs.createQueue(
 				{
 					QueueName: queueName
 				}
 			).promise()
 
+
+			const { Attributes: { QueueArn: queueArn } } = await sqs.getQueueAttributes({
+				QueueUrl: queueUrl,
+				AttributeNames: ['QueueArn']
+			}).promise();
+
 			queueUrls.push(queueUrl);
 
 			await sns.subscribe({
 				Protocol: 'sqs',
 				TopicArn: topicArn,
-				Endpoint: queueUrl,
+				Endpoint: queueArn,
 				Attributes: {
 					RawMessageDelivery: 'true'
 				}
 			}).promise();
+
+			await sqs.setQueueAttributes(
+				{
+					QueueUrl: queueUrl,
+					Attributes: {
+						Policy: JSON.stringify(
+							{
+								Version: '2012-10-17',
+								Id: `${queueArn}/SQSDefaultPolicy`,
+								Statement: [
+									{
+										Sid: `Sid${Date.now()}`,
+										Effect: 'Allow',
+										'Principal': {
+											AWS: '*'
+										},
+										Action: 'SQS:SendMessage',
+										Resource: queueArn,
+										Condition: {
+											ArnEquals: {
+												"aws:SourceArn": topicArn
+											}
+										}
+									}
+								]
+							}
+						)
+					}
+				}
+			).promise();
 
 			queueHandlers.push((async () => {
 				while (isRunning) {
@@ -73,7 +116,8 @@ const queueUrls = [];
 					receiveQueueMessages[queueName].push(...messages.map(message => Date.now() - parseInt(message.Body)));
 
 					for (const message of messages) {
-						await sqs.deleteMessage(
+						// not await - fire and forgot
+						sqs.deleteMessage(
 							{
 								QueueUrl: queueUrl,
 								ReceiptHandle: message.ReceiptHandle
@@ -85,19 +129,23 @@ const queueUrls = [];
 		}
 
 
-		for (let i = 0; i < NUMBER_MESSAGES; i++) {
+		await Promise.all([...new Array(NUMBER_MESSAGES)].map(async () => {
 			await sns.publish(
 				{
 					TopicArn: topicArn,
 					Message: Date.now().toString()
 				}
 			).promise();
-		}
+		}));
 	}
 })();
 
 setTimeout(async () => {
 	isRunning = false;
+
+	for (const topicQueue in receiveQueueMessages) {
+		console.log(`Deliver times for ${topicQueue}:`, receiveQueueMessages[topicQueue].join(', '));
+	}
 
 	for (const queueUrl of queueUrls) {
 		await sqs.purgeQueue({ QueueUrl: queueUrl }).promise();
@@ -107,8 +155,5 @@ setTimeout(async () => {
 	for (const topicArn of topicArns) {
 		await sns.deleteTopic({ TopicArn: topicArn }).promise();
 	}
-
-	for (const topicQueue in receiveQueueMessages) {
-		console.log(`Deliver times for ${topicQueue}:`, receiveQueueMessages[topicQueue].join(', '));
-	}
 }, 30000);
+
